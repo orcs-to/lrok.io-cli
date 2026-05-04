@@ -22,6 +22,7 @@ const usage = `lrok - public URLs for your local server
 Usage:
   lrok login [--token TOKEN]         save your API token
   lrok http <port> [--hint X]        tunnel http://localhost:<port>
+  lrok tcp <port>                    tunnel raw TCP from localhost:<port>
   lrok reserve <name> [--desc T]     reserve a subdomain for your account
   lrok unreserve <name>              release a reserved subdomain
   lrok reservations                  list your reservations
@@ -48,6 +49,8 @@ func main() {
 		runLogin(os.Args[2:])
 	case "http":
 		runHTTP(os.Args[2:])
+	case "tcp":
+		runTCP(os.Args[2:])
 	case "reserve":
 		runReserve(os.Args[2:])
 	case "unreserve":
@@ -204,6 +207,41 @@ func runHTTP(args []string) {
 		LocalTarget: "127.0.0.1:" + port,
 		Hint:        *hint,
 		AuthToken:   token,
+		Insecure:    *insecure,
+	}
+
+	if err := client.Run(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+// runTCP handles `lrok tcp <port>` — opens a raw TCP tunnel to the
+// edge-allocated public port. Distinct from runHTTP so the two grow flags
+// independently and merges with HTTP-only changes stay disjoint.
+func runTCP(args []string) {
+	fs := flag.NewFlagSet("tcp", flag.ExitOnError)
+	tunnelAddr := fs.String("tunnel", "tunnel.lrok.io:7000", "tunnel server address")
+	tokenFlag := fs.String("token", "", "override saved token")
+	insecure := fs.Bool("insecure", false, "disable TLS on the tunnel connection (dev only)")
+	_ = fs.Parse(reorderFlags(args, map[string]bool{
+		"--tunnel": true, "-tunnel": true,
+		"--token": true, "-token": true,
+	}))
+
+	if fs.NArg() < 1 {
+		fmt.Fprint(os.Stderr, "missing port\n\nusage: lrok tcp <port>\n")
+		os.Exit(2)
+	}
+
+	token := requireToken(*tokenFlag)
+	port := fs.Arg(0)
+
+	cfg := client.Config{
+		TunnelAddr:  *tunnelAddr,
+		LocalTarget: "127.0.0.1:" + port,
+		AuthToken:   token,
+		Mode:        "tcp",
 		Insecure:    *insecure,
 	}
 
