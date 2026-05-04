@@ -1,24 +1,28 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/orcs-to/lrok.io-cli/internal/client"
+	"github.com/orcs-to/lrok.io-cli/internal/config"
 )
 
 const usage = `lrok - public URLs for your local server
 
 Usage:
-  lrok http <port>              expose http://localhost:<port>
-  lrok http <port> --hint NAME  request NAME.lrok.io (best effort)
+  lrok login [--token TOKEN]    save your API token
+  lrok http <port> [--hint X]   tunnel http://localhost:<port>
 
-Flags:
+Flags (lrok http):
   --tunnel ADDR   tunnel server address (default "tunnel.lrok.io:7000")
   --hint NAME     preferred subdomain
-  --token TOKEN   auth token (ignored in milestone 1)
+  --token TOKEN   override saved token
+
+Create a token at https://lrok.io/dashboard/tokens
 `
 
 func main() {
@@ -28,6 +32,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "login":
+		runLogin(os.Args[2:])
 	case "http":
 		runHTTP(os.Args[2:])
 	case "-h", "--help", "help":
@@ -38,11 +44,41 @@ func main() {
 	}
 }
 
+func runLogin(args []string) {
+	fs := flag.NewFlagSet("login", flag.ExitOnError)
+	tokenFlag := fs.String("token", "", "API token (or omit to be prompted)")
+	_ = fs.Parse(args)
+
+	token := strings.TrimSpace(*tokenFlag)
+	if token == "" {
+		fmt.Print("Paste your API token: ")
+		r := bufio.NewReader(os.Stdin)
+		line, err := r.ReadString('\n')
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error reading token:", err)
+			os.Exit(1)
+		}
+		token = strings.TrimSpace(line)
+	}
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "no token provided")
+		os.Exit(1)
+	}
+
+	if err := config.Save(&config.Config{Token: token}); err != nil {
+		fmt.Fprintln(os.Stderr, "error saving token:", err)
+		os.Exit(1)
+	}
+
+	p, _ := config.Path()
+	fmt.Printf("Saved to %s\n", p)
+}
+
 func runHTTP(args []string) {
 	fs := flag.NewFlagSet("http", flag.ExitOnError)
 	tunnelAddr := fs.String("tunnel", "tunnel.lrok.io:7000", "tunnel server address")
 	hint := fs.String("hint", "", "preferred subdomain")
-	token := fs.String("token", "", "auth token")
+	tokenFlag := fs.String("token", "", "override saved token")
 	_ = fs.Parse(reorderFlags(args, map[string]bool{
 		"--tunnel": true, "-tunnel": true,
 		"--hint": true, "-hint": true,
@@ -50,18 +86,31 @@ func runHTTP(args []string) {
 	}))
 
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "missing port\n")
+		fmt.Fprint(os.Stderr, "missing port\n\n")
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
 
-	port := fs.Arg(0)
+	token := strings.TrimSpace(*tokenFlag)
+	if token == "" {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error reading config:", err)
+			os.Exit(1)
+		}
+		token = cfg.Token
+	}
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "no API token configured. Run `lrok login` (token from https://lrok.io/dashboard/tokens) or pass --token")
+		os.Exit(1)
+	}
 
+	port := fs.Arg(0)
 	cfg := client.Config{
 		TunnelAddr:  *tunnelAddr,
 		LocalTarget: "127.0.0.1:" + port,
 		Hint:        *hint,
-		AuthToken:   *token,
+		AuthToken:   token,
 	}
 
 	if err := client.Run(cfg); err != nil {
