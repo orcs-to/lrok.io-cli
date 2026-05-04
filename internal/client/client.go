@@ -20,6 +20,11 @@ type Config struct {
 	LocalTarget string
 	Hint        string
 	AuthToken   string
+	// Mode selects the tunnel kind. "" or protocol.ModeHTTP is HTTP (default
+	// behavior, including request parsing). protocol.ModeTCP is raw TCP —
+	// each accepted yamux stream is dialed straight to LocalTarget with no
+	// HTTP-level handling.
+	Mode string
 	// Insecure disables TLS for the control-plane connection. Used for local
 	// dev against an edge running with --tls-cert-source=none. Honors both
 	// the --insecure flag and the LROK_INSECURE=1 env var.
@@ -47,6 +52,7 @@ func Run(cfg Config) error {
 		Version:   protocol.Version,
 		AuthToken: cfg.AuthToken,
 		Hint:      cfg.Hint,
+		Mode:      cfg.Mode,
 	}); err != nil {
 		return fmt.Errorf("send register: %w", err)
 	}
@@ -59,14 +65,23 @@ func Run(cfg Config) error {
 		return fmt.Errorf("register failed: %s", resp.Error)
 	}
 
-	fmt.Fprintf(os.Stdout, "\n  Forwarding %s -> http://%s\n\n", resp.PublicURL, cfg.LocalTarget)
+	tcp := cfg.Mode == protocol.ModeTCP
+	if tcp {
+		fmt.Fprintf(os.Stdout, "\n  Forwarding tcp://%s -> tcp://%s\n\n", resp.PublicAddr, cfg.LocalTarget)
+	} else {
+		fmt.Fprintf(os.Stdout, "\n  Forwarding %s -> http://%s\n\n", resp.PublicURL, cfg.LocalTarget)
+	}
 
 	for {
 		stream, err := sess.AcceptStream()
 		if err != nil {
 			return fmt.Errorf("accept stream: %w", err)
 		}
-		go handleStream(stream, cfg.LocalTarget)
+		if tcp {
+			go handleTCPStream(stream, cfg.LocalTarget)
+		} else {
+			go handleStream(stream, cfg.LocalTarget)
+		}
 	}
 }
 
@@ -96,6 +111,43 @@ func dialTunnel(cfg Config) (net.Conn, error) {
 		return nil, fmt.Errorf("tls dial %s: %w (set LROK_INSECURE=1 for plain TCP against a local edge)", cfg.TunnelAddr, err)
 	}
 	return conn, nil
+}
+
+// handleTCPStream forwards a raw TCP yamux stream straight to target with no
+// HTTP-level parsing. Used by `lrok tcp <port>`.
+func handleTCPStream(stream net.Conn, target string) {
+	defer stream.Close()
+
+	local, err := net.Dial("tcp", target)
+	if err != nil {
+		// No HTTP frame to write; just log to stderr and drop the conn.
+		fmt.Fprintf(os.Stderr, "lrok cli: cannot reach local target %s: %v\n", target, err)
+		return
+	}
+	defer local.Close()
+
+	type writeCloser interface{ CloseWrite() error }
+	halfCloseWrite := func(c net.Conn) {
+		if wc, ok := c.(writeCloser); ok {
+			_ = wc.CloseWrite()
+			return
+		}
+		_ = c.Close()
+	}
+
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(stream, local)
+		halfCloseWrite(stream)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(local, stream)
+		halfCloseWrite(local)
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
 }
 
 func handleStream(stream net.Conn, target string) {
