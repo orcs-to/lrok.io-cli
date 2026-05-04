@@ -2,15 +2,19 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/orcs-to/lrok.io-cli/internal/apiclient"
 	"github.com/orcs-to/lrok.io-cli/internal/client"
 	"github.com/orcs-to/lrok.io-cli/internal/config"
+	versionpkg "github.com/orcs-to/lrok.io-cli/internal/version"
 )
 
 // version is set by the release pipeline via -ldflags "-X main.version=...".
@@ -21,10 +25,14 @@ const usage = `lrok - public URLs for your local server
 
 Usage:
   lrok login [--token TOKEN]         save your API token
+  lrok logout                        forget the saved API token
   lrok http <port> [--hint X]        tunnel http://localhost:<port>
   lrok reserve <name> [--desc T]     reserve a subdomain for your account
   lrok unreserve <name>              release a reserved subdomain
   lrok reservations                  list your reservations
+  lrok status                        show plan + active tunnels
+  lrok config show                   print saved config (token redacted)
+  lrok update                        check for a newer release
   lrok version                       print version
 
 Flags (lrok http):
@@ -46,6 +54,8 @@ func main() {
 	switch os.Args[1] {
 	case "login":
 		runLogin(os.Args[2:])
+	case "logout":
+		runLogout(os.Args[2:])
 	case "http":
 		runHTTP(os.Args[2:])
 	case "reserve":
@@ -54,6 +64,12 @@ func main() {
 		runUnreserve(os.Args[2:])
 	case "reservations":
 		runListReservations(os.Args[2:])
+	case "status":
+		runStatus(os.Args[2:])
+	case "config":
+		runConfig(os.Args[2:])
+	case "update":
+		runUpdate(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -210,6 +226,236 @@ func runHTTP(args []string) {
 	if err := client.Run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+}
+
+// runLogout removes the saved API token from the config file.
+// Idempotent: succeeds silently if no token was set.
+func runLogout(args []string) {
+	fs := flag.NewFlagSet("logout", flag.ExitOnError)
+	fs.Usage = func() { fmt.Fprintln(os.Stderr, "usage: lrok logout") }
+	_ = fs.Parse(args)
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error reading config:", err)
+		os.Exit(1)
+	}
+	if cfg.Token == "" {
+		// No-op, but still report so users know the state.
+		fmt.Println("Signed out")
+		return
+	}
+	cfg.Token = ""
+	if err := config.Save(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "error saving config:", err)
+		os.Exit(1)
+	}
+	fmt.Println("Signed out")
+}
+
+// redactToken keeps the leading "ak_" (or first 3 chars) and last 4
+// characters and redacts the rest. Empty input returns "(none)".
+func redactToken(t string) string {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return "(none)"
+	}
+	// Short tokens: just show last 4 (or whole tail) with leading dots.
+	if len(t) <= 8 {
+		n := 4
+		if len(t) < n {
+			n = len(t)
+		}
+		return "***" + t[len(t)-n:]
+	}
+	prefix := t[:3]
+	last4 := t[len(t)-4:]
+	return prefix + "..." + last4
+}
+
+// runConfig handles `lrok config show`.
+func runConfig(args []string) {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Fprintln(os.Stderr, "usage: lrok config show")
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+	switch args[0] {
+	case "show":
+		runConfigShow(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown config subcommand: %s\nusage: lrok config show\n", args[0])
+		os.Exit(2)
+	}
+}
+
+func runConfigShow(args []string) {
+	fs := flag.NewFlagSet("config show", flag.ExitOnError)
+	fs.Usage = func() { fmt.Fprintln(os.Stderr, "usage: lrok config show") }
+	_ = fs.Parse(args)
+
+	p, err := config.Path()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error locating config:", err)
+		os.Exit(1)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error reading config:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("config: %s\n", p)
+	fmt.Printf("token = %s\n", redactToken(cfg.Token))
+}
+
+// runStatus prints account info, plan quotas, and active tunnels.
+func runStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	tokenFlag := fs.String("token", "", "override saved token")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: lrok status [--token TOKEN]")
+	}
+	_ = fs.Parse(reorderFlags(args, map[string]bool{
+		"--token": true, "-token": true,
+	}))
+
+	// Manual token check so we can give the friendlier "Run `lrok login`" message.
+	token := strings.TrimSpace(*tokenFlag)
+	if token == "" {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error reading config:", err)
+			os.Exit(1)
+		}
+		token = cfg.Token
+	}
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "Run `lrok login` first.")
+		os.Exit(1)
+	}
+
+	c := apiclient.New(token)
+	c.BaseURL = apiBaseURL() // honour LROK_API for tests
+
+	fmt.Printf("Signed in as %s\n", redactToken(token))
+
+	plan, err := c.GetPlan()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "couldn't fetch plan:", err)
+	} else {
+		fmt.Printf("Tunnels:      %s\n", quotaString(plan.TunnelUsed, plan.TunnelQuota))
+		fmt.Printf("Reservations: %s\n", quotaString(plan.ReservationUsed, plan.ReservationQuota))
+	}
+
+	tunnels, err := c.ListMyTunnels()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "couldn't fetch tunnels:", err)
+		os.Exit(1)
+	}
+	fmt.Println()
+	if len(tunnels) == 0 {
+		fmt.Println("No active tunnels — try `lrok http 3000`")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SUBDOMAIN\tPUBLIC URL\tAGE")
+	now := time.Now()
+	for _, t := range tunnels {
+		age := "—"
+		if !t.StartedAt.IsZero() {
+			age = humanDuration(now.Sub(t.StartedAt))
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", t.Subdomain, t.PublicURL, age)
+	}
+	_ = tw.Flush()
+}
+
+// quotaString renders a "used / quota" pair, treating -1 as unlimited.
+func quotaString(used, quota int) string {
+	if quota < 0 {
+		return fmt.Sprintf("%d used / unlimited", used)
+	}
+	return fmt.Sprintf("%d used / %d", used, quota)
+}
+
+// humanDuration formats a duration in a compact, readable way.
+func humanDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// apiBaseURL allows tests / power users to point the CLI at a different
+// control plane without baking it into apiclient.New (which would be a
+// breaking change for other agents using it). Defaults to the production URL.
+func apiBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("LROK_API")); v != "" {
+		return v
+	}
+	return apiclient.DefaultBaseURL
+}
+
+// runUpdate checks GitHub for the latest release and prints upgrade
+// instructions. It does NOT replace the binary — the help text says so.
+func runUpdate(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr,
+			"usage: lrok update\n\n"+
+				"Checks GitHub for a newer release. This command does not replace\n"+
+				"the binary in place; it guides you to re-run the official installer.")
+	}
+	_ = fs.Parse(args)
+
+	fmt.Printf("current version: %s\n", version)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	tag, htmlURL, err := versionpkg.FetchLatestTag(ctx)
+	if err != nil {
+		fmt.Println("couldn't check latest version:", err)
+		return
+	}
+	if tag == "" {
+		fmt.Println("couldn't check latest version (rate limited or no release found)")
+		return
+	}
+
+	fmt.Printf("latest release:  %s\n", tag)
+	cmp := versionpkg.Compare(version, tag)
+
+	switch {
+	case version == "dev":
+		fmt.Println()
+		fmt.Println("You're running a dev build. To install the latest release:")
+		fmt.Println("  " + versionpkg.InstallHint())
+	case cmp < 0:
+		fmt.Println()
+		fmt.Printf("A newer version is available. Re-run the installer to upgrade:\n  %s\n",
+			versionpkg.InstallHint())
+		if u := versionpkg.AssetURL(tag); u != "" {
+			fmt.Printf("\nOr download directly for %s/%s:\n  %s\n",
+				runtime.GOOS, runtime.GOARCH, u)
+		}
+		if htmlURL != "" {
+			fmt.Printf("\nRelease notes: %s\n", htmlURL)
+		}
+	default:
+		fmt.Println()
+		fmt.Println("You're up to date.")
 	}
 }
 
