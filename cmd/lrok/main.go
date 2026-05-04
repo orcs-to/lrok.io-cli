@@ -21,6 +21,8 @@ Flags (lrok http):
   --tunnel ADDR   tunnel server address (default "tunnel.lrok.io:7000")
   --hint NAME     preferred subdomain
   --token TOKEN   override saved token
+  --insecure      disable TLS on the tunnel connection (local dev only;
+                  also enabled by LROK_INSECURE=1)
 
 Create a token at https://lrok.io/dashboard/tokens
 `
@@ -79,6 +81,7 @@ func runHTTP(args []string) {
 	tunnelAddr := fs.String("tunnel", "tunnel.lrok.io:7000", "tunnel server address")
 	hint := fs.String("hint", "", "preferred subdomain")
 	tokenFlag := fs.String("token", "", "override saved token")
+	insecure := fs.Bool("insecure", false, "disable TLS on the tunnel connection (dev only)")
 	_ = fs.Parse(reorderFlags(args, map[string]bool{
 		"--tunnel": true, "-tunnel": true,
 		"--hint": true, "-hint": true,
@@ -111,6 +114,7 @@ func runHTTP(args []string) {
 		LocalTarget: "127.0.0.1:" + port,
 		Hint:        *hint,
 		AuthToken:   token,
+		Insecure:    *insecure,
 	}
 
 	if err := client.Run(cfg); err != nil {

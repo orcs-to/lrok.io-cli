@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,12 +20,16 @@ type Config struct {
 	LocalTarget string
 	Hint        string
 	AuthToken   string
+	// Insecure disables TLS for the control-plane connection. Used for local
+	// dev against an edge running with --tls-cert-source=none. Honors both
+	// the --insecure flag and the LROK_INSECURE=1 env var.
+	Insecure bool
 }
 
 func Run(cfg Config) error {
-	conn, err := net.Dial("tcp", cfg.TunnelAddr)
+	conn, err := dialTunnel(cfg)
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", cfg.TunnelAddr, err)
+		return err
 	}
 
 	sess, err := yamux.Client(conn, yamux.DefaultConfig())
@@ -63,6 +68,34 @@ func Run(cfg Config) error {
 		}
 		go handleStream(stream, cfg.LocalTarget)
 	}
+}
+
+// dialTunnel opens a connection to the edge's control plane, defaulting to
+// TLS with the system root store. LROK_INSECURE=1 (or cfg.Insecure) drops
+// back to plain TCP for local dev.
+func dialTunnel(cfg Config) (net.Conn, error) {
+	insecure := cfg.Insecure || os.Getenv("LROK_INSECURE") == "1"
+	if insecure {
+		conn, err := net.Dial("tcp", cfg.TunnelAddr)
+		if err != nil {
+			return nil, fmt.Errorf("dial %s: %w", cfg.TunnelAddr, err)
+		}
+		return conn, nil
+	}
+
+	host, _, err := net.SplitHostPort(cfg.TunnelAddr)
+	if err != nil {
+		// No port specified; use the whole string as the SNI host.
+		host = cfg.TunnelAddr
+	}
+	conn, err := tls.Dial("tcp", cfg.TunnelAddr, &tls.Config{
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tls dial %s: %w (set LROK_INSECURE=1 for plain TCP against a local edge)", cfg.TunnelAddr, err)
+	}
+	return conn, nil
 }
 
 func handleStream(stream net.Conn, target string) {
