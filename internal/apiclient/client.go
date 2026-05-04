@@ -70,6 +70,23 @@ func (c *Client) GetPlan() (*Plan, error) {
 	return &out, nil
 }
 
+// Tunnel describes an active tunnel attached to the caller's account.
+// Field names match the shape served by the dashboard's existing endpoint.
+type Tunnel struct {
+	Subdomain string    `json:"subdomain"`
+	PublicURL string    `json:"publicUrl"`
+	Protocol  string    `json:"protocol,omitempty"`
+	StartedAt time.Time `json:"startedAt"`
+}
+
+func (c *Client) ListMyTunnels() ([]Tunnel, error) {
+	var out []Tunnel
+	if err := c.do("GET", "/api/v1/me/tunnels", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) do(method, path string, in any, out any) error {
 	var body io.Reader
 	if in != nil {
