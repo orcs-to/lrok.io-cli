@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/orcs-to/lrok.io-cli/internal/client"
 )
@@ -42,7 +43,11 @@ func runHTTP(args []string) {
 	tunnelAddr := fs.String("tunnel", "tunnel.lrok.io:7000", "tunnel server address")
 	hint := fs.String("hint", "", "preferred subdomain")
 	token := fs.String("token", "", "auth token")
-	_ = fs.Parse(args)
+	_ = fs.Parse(reorderFlags(args, map[string]bool{
+		"--tunnel": true, "-tunnel": true,
+		"--hint": true, "-hint": true,
+		"--token": true, "-token": true,
+	}))
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "missing port\n")
@@ -63,4 +68,29 @@ func runHTTP(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// reorderFlags lets users put flags after positional args (matches ngrok UX).
+// stdlib flag.Parse stops at the first non-flag arg, so `lrok http 3000 --hint x`
+// would otherwise drop `--hint x`. We move all flag tokens before positionals.
+func reorderFlags(args []string, flagsWithValue map[string]bool) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			flags = append(flags, args[i:]...)
+			break
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			pos = append(pos, a)
+			continue
+		}
+		flags = append(flags, a)
+		name := strings.SplitN(a, "=", 2)[0]
+		if !strings.Contains(a, "=") && flagsWithValue[name] && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, pos...)
 }
