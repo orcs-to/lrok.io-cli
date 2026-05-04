@@ -11,11 +11,16 @@ import (
 	"github.com/orcs-to/lrok.io-cli/internal/config"
 )
 
+// version is set by the release pipeline via -ldflags "-X main.version=...".
+// Defaults to "dev" for local `go build` / `go install` invocations.
+var version = "dev"
+
 const usage = `lrok - public URLs for your local server
 
 Usage:
   lrok login [--token TOKEN]    save your API token
   lrok http <port> [--hint X]   tunnel http://localhost:<port>
+  lrok version                  print version
 
 Flags (lrok http):
   --tunnel ADDR   tunnel server address (default "tunnel.lrok.io:7000")
@@ -36,6 +41,8 @@ func main() {
 		runLogin(os.Args[2:])
 	case "http":
 		runHTTP(os.Args[2:])
+	case "version", "--version", "-v":
+		fmt.Println(version)
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:
