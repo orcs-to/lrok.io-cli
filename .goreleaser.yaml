@@ -1,0 +1,54 @@
+# GoReleaser config for the lrok CLI.
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: lrok
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: lrok
+    main: ./cmd/lrok
+    binary: lrok
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+# We deliberately ship raw binaries (lrok-<os>-<arch>[.exe]) rather than tarballs
+# so the install scripts can do a single curl + chmod. This matches the user's
+# `lrok-<os>-<arch>` naming requirement.
+archives:
+  - id: raw
+    format: binary
+    name_template: "lrok-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto

@@ -68,7 +68,10 @@ func Run(cfg Config) error {
 func handleStream(stream net.Conn, target string) {
 	defer stream.Close()
 
-	req, err := http.ReadRequest(bufio.NewReader(stream))
+	// Buffered reader so we can both http.ReadRequest AND, for upgrades,
+	// continue copying any bytes the buffered reader pulled past the head.
+	br := bufio.NewReader(stream)
+	req, err := http.ReadRequest(br)
 	if err != nil {
 		return
 	}
@@ -84,7 +87,48 @@ func handleStream(stream net.Conn, target string) {
 		return
 	}
 
+	if isUpgradeRequest(req) {
+		// HTTP/1.1 protocol upgrade (e.g. WebSocket). After the local
+		// server writes its 101 response, it expects bidirectional
+		// traffic on the same connection. Bridge stream <-> local both
+		// ways so frames flow in each direction.
+		done := make(chan struct{}, 2)
+		go func() {
+			_, _ = io.Copy(stream, local)
+			done <- struct{}{}
+		}()
+		go func() {
+			_, _ = io.Copy(local, br)
+			done <- struct{}{}
+		}()
+		<-done
+		return
+	}
+
 	_, _ = io.Copy(stream, local)
+}
+
+// isUpgradeRequest reports whether the request opted into an HTTP/1.1
+// protocol upgrade (e.g. WebSocket handshake). Per RFC 7230 the
+// Connection header must contain the "upgrade" token and Upgrade names
+// the target protocol.
+func isUpgradeRequest(r *http.Request) bool {
+	if !headerContainsToken(r.Header, "Connection", "upgrade") {
+		return false
+	}
+	return r.Header.Get("Upgrade") != ""
+}
+
+func headerContainsToken(h http.Header, name, token string) bool {
+	token = strings.ToLower(token)
+	for _, v := range h.Values(name) {
+		for _, part := range strings.Split(v, ",") {
+			if strings.ToLower(strings.TrimSpace(part)) == token {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func writeError(w io.Writer, code int, msg string) {
