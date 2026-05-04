@@ -87,6 +87,54 @@ func (c *Client) ListMyTunnels() ([]Tunnel, error) {
 	return out, nil
 }
 
+// CustomDomain mirrors the API's customDomainDTO. VerifyToken /
+// Instructions are populated only on the freshly-created (still pending)
+// response — they go away once the host is verified.
+type CustomDomain struct {
+	Host         string     `json:"host"`
+	Target       string     `json:"target"`
+	Verified     bool       `json:"verified"`
+	VerifyToken  string     `json:"verifyToken,omitempty"`
+	Instructions string     `json:"instructions,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	VerifiedAt   *time.Time `json:"verifiedAt,omitempty"`
+}
+
+func (c *Client) ListDomains() ([]CustomDomain, error) {
+	var out []CustomDomain
+	if err := c.do("GET", "/api/v1/me/domains", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateDomain(host, target string) (*CustomDomain, error) {
+	body := map[string]string{"host": host, "target": target}
+	var out CustomDomain
+	if err := c.do("POST", "/api/v1/me/domains", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// VerifyDomainResult is the JSON shape returned by POST /domains/{host}/verify.
+type VerifyDomainResult struct {
+	Verified bool   `json:"verified"`
+	Error    string `json:"error,omitempty"`
+}
+
+func (c *Client) VerifyDomain(host string) (*VerifyDomainResult, error) {
+	var out VerifyDomainResult
+	if err := c.do("POST", "/api/v1/me/domains/"+host+"/verify", struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteDomain(host string) error {
+	return c.do("DELETE", "/api/v1/me/domains/"+host, nil, nil)
+}
+
 func (c *Client) do(method, path string, in any, out any) error {
 	var body io.Reader
 	if in != nil {

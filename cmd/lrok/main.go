@@ -31,6 +31,10 @@ Usage:
   lrok reserve <name> [--desc T]     reserve a subdomain for your account
   lrok unreserve <name>              release a reserved subdomain
   lrok reservations                  list your reservations
+  lrok domain add <host> --target X  register a bring-your-own custom domain
+  lrok domain verify <host>          check the TXT record + activate routing
+  lrok domain remove <host>          unregister a custom domain
+  lrok domains                       list your custom domains
   lrok status                        show plan + active tunnels
   lrok config show                   print saved config (token redacted)
   lrok update                        check for a newer release
@@ -68,6 +72,10 @@ func main() {
 		runUnreserve(os.Args[2:])
 	case "reservations":
 		runListReservations(os.Args[2:])
+	case "domain":
+		runDomain(os.Args[2:])
+	case "domains":
+		runListDomains(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
 	case "config":
