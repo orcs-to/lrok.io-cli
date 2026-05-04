@@ -25,6 +25,9 @@ type Config struct {
 	// each accepted yamux stream is dialed straight to LocalTarget with no
 	// HTTP-level handling.
 	Mode string
+	// BasicAuth, if non-empty, asks the edge to gate the public URL with HTTP
+	// Basic Auth. Format is the literal "user:pass" string. HTTP mode only.
+	BasicAuth string
 	// Insecure disables TLS for the control-plane connection. Used for local
 	// dev against an edge running with --tls-cert-source=none. Honors both
 	// the --insecure flag and the LROK_INSECURE=1 env var.
@@ -36,7 +39,12 @@ func Run(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	return runWithConn(conn, cfg)
+}
 
+// runWithConn is the post-dial half of Run, factored out so tests can drive
+// it with an in-memory net.Conn (e.g. one half of a net.Pipe).
+func runWithConn(conn net.Conn, cfg Config) error {
 	sess, err := yamux.Client(conn, yamux.DefaultConfig())
 	if err != nil {
 		return fmt.Errorf("yamux client: %w", err)
@@ -53,6 +61,7 @@ func Run(cfg Config) error {
 		AuthToken: cfg.AuthToken,
 		Hint:      cfg.Hint,
 		Mode:      cfg.Mode,
+		BasicAuth: cfg.BasicAuth,
 	}); err != nil {
 		return fmt.Errorf("send register: %w", err)
 	}

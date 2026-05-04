@@ -29,11 +29,12 @@ Usage:
   lrok version                       print version
 
 Flags (lrok http):
-  --tunnel ADDR   tunnel server address (default "tunnel.lrok.io:7000")
-  --hint NAME     preferred subdomain (your reservation, or first-come)
-  --token TOKEN   override saved token
-  --insecure      disable TLS on the tunnel connection (local dev only;
-                  also enabled by LROK_INSECURE=1)
+  --tunnel ADDR        tunnel server address (default "tunnel.lrok.io:7000")
+  --hint NAME          preferred subdomain (your reservation, or first-come)
+  --token TOKEN        override saved token
+  --basic-auth U:P     gate the public URL behind HTTP Basic Auth (user:pass)
+  --insecure           disable TLS on the tunnel connection (local dev only;
+                       also enabled by LROK_INSECURE=1)
 
 Create a token at https://lrok.io/dashboard/tokens
 `
@@ -186,17 +187,30 @@ func runHTTP(args []string) {
 	tunnelAddr := fs.String("tunnel", "tunnel.lrok.io:7000", "tunnel server address")
 	hint := fs.String("hint", "", "preferred subdomain")
 	tokenFlag := fs.String("token", "", "override saved token")
+	basicAuth := fs.String("basic-auth", "", "gate the public URL with HTTP Basic Auth (user:pass)")
 	insecure := fs.Bool("insecure", false, "disable TLS on the tunnel connection (dev only)")
 	_ = fs.Parse(reorderFlags(args, map[string]bool{
 		"--tunnel": true, "-tunnel": true,
 		"--hint": true, "-hint": true,
 		"--token": true, "-token": true,
+		"--basic-auth": true, "-basic-auth": true,
 	}))
 
 	if fs.NArg() < 1 {
 		fmt.Fprint(os.Stderr, "missing port\n\n")
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
+	}
+
+	// Validate --basic-auth client-side so we fail fast with a clear message
+	// instead of round-tripping to the edge for the same complaint.
+	ba := strings.TrimSpace(*basicAuth)
+	if ba != "" {
+		u, p, ok := splitBasicAuthArg(ba)
+		if !ok || u == "" || p == "" {
+			fmt.Fprintln(os.Stderr, "--basic-auth must be 'user:pass' with non-empty user and password")
+			os.Exit(2)
+		}
 	}
 
 	token := requireToken(*tokenFlag)
@@ -207,6 +221,7 @@ func runHTTP(args []string) {
 		LocalTarget: "127.0.0.1:" + port,
 		Hint:        *hint,
 		AuthToken:   token,
+		BasicAuth:   ba,
 		Insecure:    *insecure,
 	}
 
@@ -249,6 +264,16 @@ func runTCP(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// splitBasicAuthArg parses the "user:pass" form. Split on the first colon
+// only so passwords containing ':' are preserved (RFC 7617).
+func splitBasicAuthArg(s string) (user, pass string, ok bool) {
+	i := strings.IndexByte(s, ':')
+	if i < 0 {
+		return "", "", false
+	}
+	return s[:i], s[i+1:], true
 }
 
 // reorderFlags lets users put flags after positional args (matches ngrok UX).
