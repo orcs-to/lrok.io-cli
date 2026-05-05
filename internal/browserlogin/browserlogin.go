@@ -222,8 +222,11 @@ var hexHelper = hex.EncodeToString
 func openBrowser(target string) error {
 	switch runtime.GOOS {
 	case "windows":
-		// `cmd /c start` interprets `&` etc., quote the URL.
-		return exec.Command("cmd", "/c", "start", "", target).Start()
+		// Avoid `cmd /c start` here — cmd interprets `&` in the URL as a
+		// command separator, so only the prefix up to the first `&`
+		// reaches the browser. rundll32 + FileProtocolHandler is the
+		// shell-free path that handles arbitrary URLs verbatim.
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target).Start()
 	case "darwin":
 		return exec.Command("open", target).Start()
 	default:
