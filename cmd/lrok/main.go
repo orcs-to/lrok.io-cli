@@ -15,6 +15,7 @@ import (
 	"github.com/orcs-to/lrok.io-cli/internal/browserlogin"
 	"github.com/orcs-to/lrok.io-cli/internal/client"
 	"github.com/orcs-to/lrok.io-cli/internal/config"
+	"github.com/orcs-to/lrok.io-cli/internal/selfupdate"
 	versionpkg "github.com/orcs-to/lrok.io-cli/internal/version"
 )
 
@@ -40,7 +41,7 @@ Usage:
   lrok domains                       list your custom domains
   lrok status                        show plan + active tunnels
   lrok config show                   print saved config (token redacted)
-  lrok update                        check for a newer release
+  lrok update [--check] [-y]         self-update to the latest release
   lrok version                       print version
 
 Flags (lrok http):
@@ -55,6 +56,10 @@ Create a token at https://lrok.io/dashboard/tokens
 `
 
 func main() {
+	// Best-effort: drop any `<exe>.old` left by a prior Windows self-update.
+	// No-op everywhere else, no-op when nothing's there.
+	selfupdate.CleanupStaleOld()
+
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -501,15 +506,19 @@ func apiBaseURL() string {
 	return apiclient.DefaultBaseURL
 }
 
-// runUpdate checks GitHub for the latest release and prints upgrade
-// instructions. It does NOT replace the binary — the help text says so.
+// runUpdate checks GitHub for the latest release and replaces the running
+// binary in place after SHA-256 verification. Use --check to skip the
+// replace and only print status (the old behavior).
 func runUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	checkOnly := fs.Bool("check", false, "only check, don't replace the binary")
+	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	fs.BoolVar(yes, "y", false, "skip the confirmation prompt (alias)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr,
-			"usage: lrok update\n\n"+
-				"Checks GitHub for a newer release. This command does not replace\n"+
-				"the binary in place; it guides you to re-run the official installer.")
+			"usage: lrok update [--check] [--yes]\n\n"+
+				"Downloads the latest release, verifies its SHA-256, and replaces\n"+
+				"the running binary. --check prints the comparison without replacing.")
 	}
 	_ = fs.Parse(args)
 
@@ -530,25 +539,62 @@ func runUpdate(args []string) {
 	fmt.Printf("latest release:  %s\n", tag)
 	cmp := versionpkg.Compare(version, tag)
 
-	switch {
-	case version == "dev":
-		fmt.Println()
-		fmt.Println("You're running a dev build. To install the latest release:")
-		fmt.Println("  " + versionpkg.InstallHint())
-	case cmp < 0:
-		fmt.Println()
-		fmt.Printf("A newer version is available. Re-run the installer to upgrade:\n  %s\n",
-			versionpkg.InstallHint())
-		if u := versionpkg.AssetURL(tag); u != "" {
-			fmt.Printf("\nOr download directly for %s/%s:\n  %s\n",
-				runtime.GOOS, runtime.GOARCH, u)
-		}
-		if htmlURL != "" {
-			fmt.Printf("\nRelease notes: %s\n", htmlURL)
-		}
-	default:
+	if version != "dev" && cmp >= 0 {
 		fmt.Println()
 		fmt.Println("You're up to date.")
+		return
+	}
+
+	if version == "dev" {
+		fmt.Println()
+		fmt.Println("You're running a dev build — refusing to self-replace.")
+		fmt.Println("Install the latest release with:")
+		fmt.Println("  " + versionpkg.InstallHint())
+		return
+	}
+
+	asset := versionpkg.AssetURL(tag)
+	fmt.Println()
+	fmt.Printf("A newer version is available: %s -> %s\n", version, tag)
+	if htmlURL != "" {
+		fmt.Printf("Release notes: %s\n", htmlURL)
+	}
+	if asset != "" {
+		fmt.Printf("Asset: %s\n", asset)
+	}
+
+	if *checkOnly {
+		fmt.Println()
+		fmt.Printf("Run `lrok update` to replace the binary, or re-run the installer:\n  %s\n",
+			versionpkg.InstallHint())
+		return
+	}
+
+	if !*yes {
+		fmt.Print("\nReplace the running binary now? [Y/n] ")
+		r := bufio.NewReader(os.Stdin)
+		line, _ := r.ReadString('\n')
+		line = strings.ToLower(strings.TrimSpace(line))
+		if line != "" && line != "y" && line != "yes" {
+			fmt.Println("aborted.")
+			return
+		}
+	}
+
+	updateCtx, updateCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer updateCancel()
+
+	fmt.Println("downloading + verifying…")
+	exePath, err := selfupdate.Apply(updateCtx, tag, asset)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "update failed:", err)
+		fmt.Fprintln(os.Stderr, "Falling back to the installer:")
+		fmt.Fprintln(os.Stderr, "  "+versionpkg.InstallHint())
+		os.Exit(1)
+	}
+	fmt.Printf("installed %s at %s\n", tag, exePath)
+	if runtime.GOOS == "windows" {
+		fmt.Println("(a `.old` file was left next to the new binary; it'll be cleaned up on next run)")
 	}
 }
 
