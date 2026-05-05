@@ -20,11 +20,23 @@ function Write-Info($msg) { Write-Host "lrok-install: $msg" }
 function Fail($msg) { Write-Error "lrok-install: $msg"; exit 1 }
 
 # --- detect arch ---
-$archEnum = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-switch ($archEnum) {
-    "X64"   { $arch = "amd64" }
-    "Arm64" { $arch = "arm64" }
-    default { Fail "unsupported arch: $archEnum" }
+# Try modern .NET first; fall back to env vars on older PowerShell where
+# RuntimeInformation can return an unrecognized or empty value.
+$archStr = $null
+try {
+    $archStr = [string][System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+} catch { }
+if (-not $archStr) {
+    # PROCESSOR_ARCHITEW6432 is set inside a 32-bit process running on a
+    # 64-bit OS; PROCESSOR_ARCHITECTURE is the running process arch. Either
+    # way the OS arch is the canonical answer.
+    $archStr = $env:PROCESSOR_ARCHITEW6432
+    if (-not $archStr) { $archStr = $env:PROCESSOR_ARCHITECTURE }
+}
+switch -Regex ($archStr) {
+    '^(X64|AMD64|x86_64)$'    { $arch = "amd64" }
+    '^(Arm64|ARM64|aarch64)$' { $arch = "arm64" }
+    default { Fail "unsupported arch: '$archStr' (set `$env:PROCESSOR_ARCHITECTURE manually if this is wrong)" }
 }
 
 $asset = "lrok-windows-$arch.exe"
