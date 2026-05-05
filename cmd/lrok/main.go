@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/orcs-to/lrok.io-cli/internal/apiclient"
+	"github.com/orcs-to/lrok.io-cli/internal/browserlogin"
 	"github.com/orcs-to/lrok.io-cli/internal/client"
 	"github.com/orcs-to/lrok.io-cli/internal/config"
 	versionpkg "github.com/orcs-to/lrok.io-cli/internal/version"
@@ -24,7 +25,9 @@ var version = "dev"
 const usage = `lrok - public URLs for your local server
 
 Usage:
-  lrok login [--token TOKEN]         save your API token
+  lrok login                         sign in via browser (default)
+  lrok login --no-browser            paste an API token (headless / SSH)
+  lrok login --token TOKEN           save the given token directly
   lrok logout                        forget the saved API token
   lrok http <port> [--hint X]        tunnel http://localhost:<port>
   lrok tcp <port>                    tunnel raw TCP from localhost:<port>
@@ -178,10 +181,29 @@ func runListReservations(args []string) {
 
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	tokenFlag := fs.String("token", "", "API token (or omit to be prompted)")
+	tokenFlag := fs.String("token", "", "paste an API token (skip the browser flow)")
+	webFlag := fs.String("web", "https://lrok.io", "lrok web origin (debug override)")
+	noBrowserFlag := fs.Bool("no-browser", false, "force the paste-token prompt (for headless / SSH sessions)")
 	_ = fs.Parse(args)
 
 	token := strings.TrimSpace(*tokenFlag)
+
+	if token == "" && !*noBrowserFlag {
+		// Default path: open the browser, let Clerk handle sign-in, the
+		// /cli-auth page mints a Clerk API key and POSTs an opaque code
+		// back to our 127.0.0.1 listener. We then exchange code+verifier
+		// for the secret. No token in any URL, ever.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		res, err := browserlogin.Run(ctx, strings.TrimRight(*webFlag, "/"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "browser login failed:", err)
+			fmt.Fprintln(os.Stderr, "Re-run with `lrok login --no-browser` to paste a token from https://lrok.io/dashboard/tokens.")
+			os.Exit(1)
+		}
+		token = res.Secret
+	}
+
 	if token == "" {
 		fmt.Print("Paste your API token: ")
 		r := bufio.NewReader(os.Stdin)
@@ -203,7 +225,7 @@ func runLogin(args []string) {
 	}
 
 	p, _ := config.Path()
-	fmt.Printf("Saved to %s\n", p)
+	fmt.Printf("Logged in. Token saved to %s\n", p)
 }
 
 func runHTTP(args []string) {
