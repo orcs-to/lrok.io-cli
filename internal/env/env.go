@@ -56,8 +56,12 @@ const (
 	prodTelemetry   = "https://api.lrok.io/api/v1/track/error"
 
 	// Staging defaults.
+	// Tunnel host reuses tunnel.lrok.io because the Traefik wildcard cert
+	// (*.lrok.io via DNS-01) covers it, and Traefik issues no second-level
+	// wildcard for *.staging.lrok.io. Port 7001 is the staging differentiator
+	// (prod is :7000) — staging's backend listens on :7001 inside the swarm.
 	stagingAPIBase     = "https://api.staging.lrok.io"
-	stagingTunnelHost  = "tunnel.staging.lrok.io:7001"
+	stagingTunnelHost  = "tunnel.lrok.io:7001"
 	stagingWebBase     = "https://staging.lrok.io"
 	stagingConfigDir   = ".lrok-staging"
 	stagingTelemetry   = "https://api.staging.lrok.io/api/v1/track/error"

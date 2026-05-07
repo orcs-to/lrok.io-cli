@@ -5,7 +5,8 @@
 # Same Go binary as production. Installed under the name `staging-lrok`
 # so the env package detects "staging" from argv[0] and points at:
 #   - https://api.staging.lrok.io
-#   - tunnel.staging.lrok.io:7001
+#   - tunnel.lrok.io:7001  (port 7001 is the staging differentiator;
+#     hostname reuses the prod wildcard TLS cert)
 #   - ~/.lrok-staging/config
 #
 # Usage:
