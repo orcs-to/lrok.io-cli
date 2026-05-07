@@ -1,5 +1,7 @@
-// Package apiclient is a tiny HTTP client for the lrok control-plane API
-// (api.lrok.io). It carries the user's API token in Authorization Bearer.
+// Package apiclient is a tiny HTTP client for the lrok control-plane API.
+// Default base URL comes from internal/env (resolves prod vs staging
+// from binary name + LROK_ENV); callers can still override BaseURL on
+// the returned Client.
 package apiclient
 
 import (
@@ -10,9 +12,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
-)
 
-const DefaultBaseURL = "https://api.lrok.io"
+	"github.com/orcs-to/lrok.io-cli/internal/env"
+)
 
 type Client struct {
 	BaseURL string
@@ -22,7 +24,7 @@ type Client struct {
 
 func New(token string) *Client {
 	return &Client{
-		BaseURL: DefaultBaseURL,
+		BaseURL: env.Resolve().APIBase,
 		Token:   token,
 		HTTP:    &http.Client{Timeout: 15 * time.Second},
 	}

@@ -30,12 +30,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/orcs-to/lrok.io-cli/internal/env"
 )
 
-const (
-	endpoint = "https://api.lrok.io/api/v1/track/error"
-	timeout  = 3 * time.Second
-)
+const timeout = 3 * time.Second
 
 // Version is set from main at startup so beacons carry the binary version.
 // Defaults to "dev" so bare `go install` builds don't claim a release tag.
@@ -102,7 +101,7 @@ func post(message, stack string) {
 		"source":  "cli",
 		"message": message,
 		"stack":   stack,
-		"context": fmt.Sprintf("%s %s/%s", Version, runtime.GOOS, runtime.GOARCH),
+		"context": fmt.Sprintf("%s %s %s/%s", Version, env.Resolve().Name, runtime.GOOS, runtime.GOARCH),
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -110,6 +109,10 @@ func post(message, stack string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	endpoint := env.Resolve().TelemetryURL
+	if endpoint == "" {
+		return // env-disabled telemetry
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return

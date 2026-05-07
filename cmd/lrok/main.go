@@ -16,6 +16,7 @@ import (
 	"github.com/orcs-to/lrok.io-cli/internal/browserlogin"
 	"github.com/orcs-to/lrok.io-cli/internal/client"
 	"github.com/orcs-to/lrok.io-cli/internal/config"
+	"github.com/orcs-to/lrok.io-cli/internal/env"
 	"github.com/orcs-to/lrok.io-cli/internal/names"
 	"github.com/orcs-to/lrok.io-cli/internal/selfupdate"
 	"github.com/orcs-to/lrok.io-cli/internal/telemetry"
@@ -107,7 +108,14 @@ func main() {
 	case "update":
 		runUpdate(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println(version)
+		// Surface the env so a misconfigured shell pointing at staging
+		// is immediately obvious. Production prints the bare version
+		// (the existing release-script regex parses this format).
+		if env.Resolve().Name != "production" {
+			fmt.Printf("%s (%s — %s)\n", version, env.Resolve().Name, env.Resolve().APIBase)
+		} else {
+			fmt.Println(version)
+		}
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:
@@ -267,7 +275,7 @@ func runListReservations(args []string) {
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	tokenFlag := fs.String("token", "", "paste an API token (skip the browser flow)")
-	webFlag := fs.String("web", "https://lrok.io", "lrok web origin (debug override)")
+	webFlag := fs.String("web", env.Resolve().WebBase, "lrok web origin (debug override)")
 	noBrowserFlag := fs.Bool("no-browser", false, "force the paste-token prompt (for headless / SSH sessions)")
 	_ = fs.Parse(args)
 
@@ -315,7 +323,7 @@ func runLogin(args []string) {
 
 func runHTTP(args []string) {
 	fs := flag.NewFlagSet("http", flag.ExitOnError)
-	tunnelAddr := fs.String("tunnel", "tunnel.lrok.io:7000", "tunnel server address")
+	tunnelAddr := fs.String("tunnel", env.Resolve().TunnelHost, "tunnel server address")
 	hint := fs.String("hint", "", "preferred subdomain")
 	tokenFlag := fs.String("token", "", "override saved token")
 	basicAuth := fs.String("basic-auth", "", "gate the public URL with HTTP Basic Auth (user:pass)")
@@ -367,7 +375,7 @@ func runHTTP(args []string) {
 // independently and merges with HTTP-only changes stay disjoint.
 func runTCP(args []string) {
 	fs := flag.NewFlagSet("tcp", flag.ExitOnError)
-	tunnelAddr := fs.String("tunnel", "tunnel.lrok.io:7000", "tunnel server address")
+	tunnelAddr := fs.String("tunnel", env.Resolve().TunnelHost, "tunnel server address")
 	tokenFlag := fs.String("token", "", "override saved token")
 	insecure := fs.Bool("insecure", false, "disable TLS on the tunnel connection (dev only)")
 	_ = fs.Parse(reorderFlags(args, map[string]bool{
@@ -580,10 +588,12 @@ func humanDuration(d time.Duration) string {
 // control plane without baking it into apiclient.New (which would be a
 // breaking change for other agents using it). Defaults to the production URL.
 func apiBaseURL() string {
+	// Legacy LROK_API var supported for back-compat; new code paths
+	// should use LROK_API_URL which env.Resolve() also picks up.
 	if v := strings.TrimSpace(os.Getenv("LROK_API")); v != "" {
 		return v
 	}
-	return apiclient.DefaultBaseURL
+	return env.Resolve().APIBase
 }
 
 // runUpdate checks GitHub for the latest release and replaces the running

@@ -6,20 +6,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/orcs-to/lrok.io-cli/internal/env"
 )
 
 type Config struct {
 	Token string `json:"token,omitempty"`
 }
 
-// Path returns the config file location: ~/.lrok/config on POSIX,
-// %USERPROFILE%\.lrok\config on Windows.
+// Path returns the config file location, scoped to the active env:
+// ~/.lrok/config for production, ~/.lrok-staging/config for staging.
+// Lets the same machine hold both prod + staging credentials side by
+// side without one clobbering the other.
 func Path() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("locate home directory: %w", err)
 	}
-	return filepath.Join(home, ".lrok", "config"), nil
+	return filepath.Join(home, env.Resolve().ConfigDirName, "config"), nil
 }
 
 func Load() (*Config, error) {
