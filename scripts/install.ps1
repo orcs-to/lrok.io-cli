@@ -17,7 +17,24 @@ $Version = if ($env:LROK_VERSION) { $env:LROK_VERSION } else { "latest" }
 $InstallDir = if ($env:LROK_INSTALL_DIR) { $env:LROK_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "lrok" }
 
 function Write-Info($msg) { Write-Host "lrok-install: $msg" }
-function Fail($msg) { Write-Error "lrok-install: $msg"; exit 1 }
+function Fail($msg) { Send-Beacon failed; Write-Error "lrok-install: $msg"; exit 1 }
+
+# Anonymous install lifecycle beacon. Pings lrok.io with one of:
+#   started / ok / failed
+# alongside the installer channel ("ps1") and detected arch — never IP,
+# username, hostname, install path. Disable with $env:LROK_TELEMETRY=0.
+function Send-Beacon($stage) {
+  if ($env:LROK_TELEMETRY -eq '0') { return }
+  $archForBeacon = if ($script:arch) { $script:arch } else { 'unknown' }
+  $body = @{ channel = 'ps1'; arch = $archForBeacon; stage = $stage } | ConvertTo-Json -Compress
+  try {
+    Invoke-RestMethod -Uri 'https://api.lrok.io/api/v1/track/install' `
+      -Method Post -ContentType 'application/json' -Body $body `
+      -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
+  } catch {
+    # telemetry must never break the install
+  }
+}
 
 # --- detect arch ---
 # Try modern .NET first; fall back to env vars on older PowerShell where
@@ -40,6 +57,9 @@ switch -Regex ($archStr) {
 }
 
 $asset = "lrok-windows-$arch.exe"
+
+# Beacon: arch detected, going for the download.
+Send-Beacon started
 
 if ($Version -eq "latest") {
     $baseUrl = "https://github.com/$Repo/releases/latest/download"
@@ -94,6 +114,10 @@ try {
     }
 
     & $dest version
+
+    # Beacon: install completed end-to-end. Fail() fires "failed" on any
+    # earlier exit; reaching here is the success signal.
+    Send-Beacon ok
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tmpDir

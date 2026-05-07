@@ -14,8 +14,24 @@ REPO="orcs-to/lrok.io-cli"
 INSTALL_DIR="${LROK_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${LROK_VERSION:-latest}"
 
-err() { printf 'lrok-install: %s\n' "$*" >&2; exit 1; }
+err() { beacon failed; printf 'lrok-install: %s\n' "$*" >&2; exit 1; }
 info() { printf 'lrok-install: %s\n' "$*"; }
+
+# Anonymous install lifecycle beacon. Pings lrok.io with one of:
+#   started / ok / failed
+# alongside the installer channel ("sh") and detected arch — never IP,
+# username, hostname, install path. Disable with LROK_TELEMETRY=0.
+beacon() {
+  [ "${LROK_TELEMETRY:-1}" = "0" ] && return 0
+  local stage="$1"
+  local body
+  body="{\"channel\":\"sh\",\"arch\":\"${arch:-unknown}\",\"stage\":\"$stage\"}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -m 3 -X POST -H 'Content-Type: application/json' \
+      -d "$body" \
+      'https://api.lrok.io/api/v1/track/install' >/dev/null 2>&1 || true
+  fi
+}
 
 # --- detect OS ---
 uname_s=$(uname -s)
@@ -34,6 +50,10 @@ case "$uname_m" in
 esac
 
 asset="lrok-${os}-${arch}"
+
+# Beacon: arch detected, going for the download. We fire here (not at
+# the very top) so the arch field carries a real value.
+beacon started
 
 # --- resolve download URLs ---
 if [ "$VERSION" = "latest" ]; then
@@ -94,3 +114,7 @@ case ":$PATH:" in
 esac
 
 "$INSTALL_DIR/lrok" version || true
+
+# Beacon: install completed end-to-end. err() fires "failed" on any
+# earlier exit; reaching this line is the success signal.
+beacon ok

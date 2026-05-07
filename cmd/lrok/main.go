@@ -16,6 +16,7 @@ import (
 	"github.com/orcs-to/lrok.io-cli/internal/client"
 	"github.com/orcs-to/lrok.io-cli/internal/config"
 	"github.com/orcs-to/lrok.io-cli/internal/selfupdate"
+	"github.com/orcs-to/lrok.io-cli/internal/telemetry"
 	versionpkg "github.com/orcs-to/lrok.io-cli/internal/version"
 )
 
@@ -56,6 +57,14 @@ Create a token at https://lrok.io/dashboard/tokens
 `
 
 func main() {
+	// Wire the version into telemetry so anonymous lifecycle beacons
+	// carry the binary tag. Disable beacons globally with LROK_TELEMETRY=0.
+	telemetry.Version = version
+
+	// Capture-and-rethrow panics so unexpected crashes get a beacon.
+	// User still sees the runtime stack on stderr.
+	defer telemetry.Recover()
+
 	// Best-effort: drop any `<exe>.old` left by a prior Windows self-update.
 	// No-op everywhere else, no-op when nothing's there.
 	selfupdate.CleanupStaleOld()
@@ -64,6 +73,11 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+
+	// Lifecycle: which sub-command was invoked. No args, no flags —
+	// just the verb. Lets us see "30% of CLI runs are `lrok http`,
+	// 5% are `lrok update`" without storing what port/hint they used.
+	telemetry.Event("cmd:" + os.Args[1])
 
 	switch os.Args[1] {
 	case "login":
