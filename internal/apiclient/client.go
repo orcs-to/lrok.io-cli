@@ -135,6 +135,21 @@ func (c *Client) DeleteDomain(host string) error {
 	return c.do("DELETE", "/api/v1/me/domains/"+host, nil, nil)
 }
 
+// HTTPError is returned by do() for any non-2xx response. Callers can
+// match on Status to disambiguate (e.g. errors.As + e.Status == 409 for
+// 'subdomain already reserved'). Implements error so the typical err
+// flow keeps working unchanged.
+type HTTPError struct {
+	Method string
+	Path   string
+	Status int
+	Body   string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("%s %s: %s", e.Method, e.Path, statusMessage(e.Status, e.Body))
+}
+
 func (c *Client) do(method, path string, in any, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -160,8 +175,12 @@ func (c *Client) do(method, path string, in any, out any) error {
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		msg := strings.TrimSpace(string(respBody))
-		return fmt.Errorf("%s %s: %s", method, path, statusMessage(resp.StatusCode, msg))
+		return &HTTPError{
+			Method: method,
+			Path:   path,
+			Status: resp.StatusCode,
+			Body:   strings.TrimSpace(string(respBody)),
+		}
 	}
 	if out != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {

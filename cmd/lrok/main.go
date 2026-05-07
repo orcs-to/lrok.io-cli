@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/orcs-to/lrok.io-cli/internal/browserlogin"
 	"github.com/orcs-to/lrok.io-cli/internal/client"
 	"github.com/orcs-to/lrok.io-cli/internal/config"
+	"github.com/orcs-to/lrok.io-cli/internal/names"
 	"github.com/orcs-to/lrok.io-cli/internal/selfupdate"
 	"github.com/orcs-to/lrok.io-cli/internal/telemetry"
 	versionpkg "github.com/orcs-to/lrok.io-cli/internal/version"
@@ -137,6 +139,8 @@ func runReserve(args []string) {
 	fs := flag.NewFlagSet("reserve", flag.ExitOnError)
 	desc := fs.String("desc", "", "optional description")
 	tokenFlag := fs.String("token", "", "override saved token")
+	yes := fs.Bool("yes", false, "auto-accept the first suggestion if the name is taken")
+	fs.BoolVar(yes, "y", false, "auto-accept the first suggestion (alias)")
 	_ = fs.Parse(reorderFlags(args, map[string]bool{
 		"--desc": true, "-desc": true,
 		"--token": true, "-token": true,
@@ -149,11 +153,73 @@ func runReserve(args []string) {
 
 	c := apiclient.New(requireToken(*tokenFlag))
 	res, err := c.CreateReservation(name, *desc)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "reserve failed:", err)
-		os.Exit(1)
+	if err == nil {
+		fmt.Printf("Reserved https://%s.lrok.io\n", res.Subdomain)
+		return
 	}
-	fmt.Printf("Reserved https://%s.lrok.io\n", res.Subdomain)
+
+	// Conflict path: someone else (or you, on a different account) already
+	// owns this subdomain. Suggest 3 friendly fallbacks instead of dumping
+	// the raw 'subdomain X is already reserved' error.
+	var httpErr *apiclient.HTTPError
+	if errors.As(err, &httpErr) && httpErr.Status == 409 {
+		fmt.Fprintf(os.Stderr, "'%s' is already reserved on lrok.io.\n", name)
+		picked := promptForSuggestion(*yes)
+		if picked == "" {
+			fmt.Fprintln(os.Stderr, "no reservation made.")
+			os.Exit(1)
+		}
+		res, err := c.CreateReservation(picked, *desc)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "reserve failed:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Reserved https://%s.lrok.io\n", res.Subdomain)
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, "reserve failed:", err)
+	os.Exit(1)
+}
+
+// promptForSuggestion shows 3 friendly-name candidates and lets the user
+// pick one with a number, or skip with `n`. With auto=true (-y flag),
+// returns the first suggestion without prompting — useful for scripts /
+// CI where stdin isn't interactive. Returns "" when the user declines.
+//
+// We call names.Suggest once and reuse the same list for the prompt
+// loop so re-typing isn't followed by a different set of candidates.
+func promptForSuggestion(auto bool) string {
+	suggestions := names.Suggest(3)
+	if len(suggestions) == 0 {
+		return ""
+	}
+	if auto {
+		fmt.Fprintln(os.Stderr, "Auto-accepting first suggestion:", suggestions[0])
+		return suggestions[0]
+	}
+	fmt.Fprintln(os.Stderr, "Suggestions:")
+	for i, s := range suggestions {
+		fmt.Fprintf(os.Stderr, "  %d) %s\n", i+1, s)
+	}
+	fmt.Fprint(os.Stderr, "Reserve one? [1/2/3/n] ")
+	r := bufio.NewReader(os.Stdin)
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return ""
+	}
+	choice := strings.TrimSpace(strings.ToLower(line))
+	switch choice {
+	case "1", "":
+		return suggestions[0]
+	case "2":
+		return suggestions[1]
+	case "3":
+		return suggestions[2]
+	default:
+		// 'n', 'no', or anything else — treat as decline.
+		return ""
+	}
 }
 
 func runUnreserve(args []string) {
