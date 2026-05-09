@@ -1,0 +1,185 @@
+# When a v* tag is pushed to this repo, ask Claude to draft a
+# /changelog entry from the commits since the previous tag, then open
+# a PR against the lrok.io-web-app repo where the changelog lives.
+#
+# Setup:
+#   gh secret set ANTHROPIC_API_KEY --repo orcs-to/lrok.io-cli
+#
+#   A GitHub PAT with repo:write on lrok.io-web-app, exposed as
+#   secret WEB_REPO_PAT (fine-grained PAT scoped to that one repo,
+#   "Pull requests: read/write" + "Contents: read/write"):
+#     gh secret set WEB_REPO_PAT --repo orcs-to/lrok.io-cli
+#
+# Without WEB_REPO_PAT the workflow exits cleanly without opening a PR.
+
+name: changelog-drafter
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to draft a changelog entry for (e.g. v0.3.0). Leave blank to use the latest tag.'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target tag + commit range
+        id: range
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          elif [ "${GITHUB_REF##*/}" = "$(git describe --tags --abbrev=0 || true)" ]; then
+            tag="${GITHUB_REF##*/}"
+          else
+            tag="${GITHUB_REF##*/}"
+          fi
+          prev=$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || echo "")
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "prev=${prev}" >> "$GITHUB_OUTPUT"
+          # Render commit log + diff stat into files we'll feed Claude.
+          if [ -n "$prev" ]; then
+            git log --pretty=format:'- %s%n%b%n---' "$prev..$tag" > /tmp/commits.txt
+            git diff --stat "$prev..$tag" > /tmp/diffstat.txt
+            echo "Commits since $prev:"
+            cat /tmp/commits.txt
+          else
+            git log --pretty=format:'- %s%n%b%n---' "$tag" -n 50 > /tmp/commits.txt
+            git diff --stat "$tag~30..$tag" > /tmp/diffstat.txt 2>/dev/null || true
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Draft changelog entry
+        id: draft
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TAG: ${{ steps.range.outputs.tag }}
+          PREV: ${{ steps.range.outputs.prev }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY not set; skipping draft."
+            exit 0
+          fi
+          node <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const tag = process.env.TAG;
+          const prev = process.env.PREV || '(initial)';
+          const commits = readFileSync('/tmp/commits.txt', 'utf8');
+          const stat = (() => { try { return readFileSync('/tmp/diffstat.txt', 'utf8'); } catch { return ''; } })();
+          const today = new Date().toISOString().slice(0, 10);
+          const prompt = `You write release notes for lrok.io, a developer-tool startup
+          selling reverse tunnels at $9/mo flat. The changelog lives in a TypeScript
+          file at app/(marketing)/changelog/_data/entries.ts. The shape per entry is:
+
+          {
+            date: 'YYYY-MM-DD',
+            title: '<short user-facing title>',
+            tag: '${tag}',
+            body: [
+              '<paragraph 1 — what changed and why a user cares>',
+              '<paragraph 2 — caveats, follow-ups, or links if any>',
+            ],
+          }
+
+          Tone:
+            - User-facing. The reader is a developer using the lrok CLI / dashboard.
+              They don't care about internal refactors unless those affect them.
+            - Concise. 1-3 short paragraphs in body[].
+            - Concrete. Numbers, command examples, or links when they help.
+              No marketing language, no exclamation marks, no emojis.
+            - Honest. If something is a small fix, frame it that way —
+              don't pad. If something is a breaking change, lead with the
+              breaking-change call-out.
+
+          Below is the git log + diff stat from ${prev}..${tag}. Distill it.
+          Output ONLY the TypeScript object literal (with leading comma) so it
+          can be prepended directly to the ENTRIES array. Do NOT wrap it in
+          markdown code fences. Do NOT include the const ENTRIES = [...]
+          declaration. Just the entry object.
+
+          Commits:
+
+          ${commits}
+
+          Diff stat:
+
+          ${stat}
+          `;
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'x-api-key': process.env.ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-6',
+              max_tokens: 1500,
+              messages: [{ role: 'user', content: prompt }],
+            }),
+          });
+          if (!res.ok) {
+            console.error('Anthropic error:', res.status, await res.text());
+            process.exit(1);
+          }
+          const body = await res.json();
+          const text = body.content?.[0]?.text?.trim();
+          if (!text) { console.error('Empty response'); process.exit(1); }
+          // Force the date to today. The model sometimes hallucinates a
+          // historical date from the commit metadata.
+          const fixed = text.replace(/date:\s*'[^']*'/, `date: '${today}'`);
+          writeFileSync('/tmp/entry.ts', fixed + '\n');
+          console.log('Draft entry:\n' + fixed);
+          NODE
+          echo "drafted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR against lrok.io-web-app
+        if: steps.draft.outputs.drafted == 'true' && env.WEB_REPO_PAT != ''
+        env:
+          WEB_REPO_PAT: ${{ secrets.WEB_REPO_PAT }}
+          TAG: ${{ steps.range.outputs.tag }}
+        run: |
+          set -e
+          tmpdir=$(mktemp -d)
+          cd "$tmpdir"
+          git clone --depth 1 "https://x-access-token:${WEB_REPO_PAT}@github.com/orcs-to/lrok.io-web-app.git" web
+          cd web
+          git config user.name "lrok-bot"
+          git config user.email "noreply@lrok.io"
+          branch="changelog/${TAG}"
+          git checkout -b "$branch"
+          file="app/(marketing)/changelog/_data/entries.ts"
+          # Locate the line with `export const ENTRIES: ChangelogEntry[] = [`
+          # and insert the drafted entry right after it.
+          entry=$(cat /tmp/entry.ts)
+          awk -v entry="$entry" '
+            /^export const ENTRIES: ChangelogEntry\[\] = \[/ {
+              print
+              print entry
+              next
+            }
+            { print }
+          ' "$file" > "$file.new"
+          mv "$file.new" "$file"
+          git add "$file"
+          git commit -m "changelog: draft entry for ${TAG}"
+          git push -u origin "$branch"
+          GH_TOKEN="$WEB_REPO_PAT" gh pr create \
+            --repo orcs-to/lrok.io-web-app \
+            --base main --head "$branch" \
+            --title "changelog: ${TAG}" \
+            --body "Auto-drafted by Claude from commits since the previous tag. Review the wording, fix anything that landed wrong, and merge."
