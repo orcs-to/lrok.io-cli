@@ -79,6 +79,12 @@ func runWithConn(conn net.Conn, cfg Config) error {
 		fmt.Fprintf(os.Stdout, "\n  Forwarding tcp://%s -> tcp://%s\n\n", resp.PublicAddr, cfg.LocalTarget)
 	} else {
 		fmt.Fprintf(os.Stdout, "\n  Forwarding %s -> http://%s\n\n", resp.PublicURL, cfg.LocalTarget)
+		// Print a markdown badge below the URL on HTTP tunnels. Devs
+		// share their work-in-progress URLs in PR descriptions, dev
+		// blog posts, and team Slacks; offering a copy-pasteable
+		// markdown badge turns each share into a backlink. Suppress
+		// this for TCP tunnels where the URL isn't web-renderable.
+		fmt.Fprintf(os.Stdout, "  Share badge:\n  [![tunneled with lrok](https://lrok.io/badge.svg)](https://lrok.io)\n\n")
 	}
 
 	for {
